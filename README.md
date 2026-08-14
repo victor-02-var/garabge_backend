@@ -1,620 +1,489 @@
-# CivicSync -- Backend
+# 🚛 Smart Municipal Waste Management Backend System
 
-Backend service for **CivicSync**, a municipal grievance reporting,
-waste-management, and fleet-tracking platform.
+An enterprise-grade, microservices-driven backend platform for **Smart Municipal Solid Waste Management**, **Dynamic Route Optimization (VRP)**, **Real-Time Fleet GPS Telemetry**, **IoT Bin Monitoring**, **AI Vision Waste Verification**, and **Citizen Grievance Redressal**.
 
-The backend is responsible for complaint processing, AI-based
-waste-image verification, EXIF GPS extraction, image storage, Supabase
-database operations, vehicle assignment/tracking, authentication, and
-administrative authorization.
+---
 
-> **Backend stack:** Node.js + Express.js\
-> **Database:** Supabase PostgreSQL\
-> **Image storage:** Cloudinary\
-> **AI verification:** Google Gemini AI Vision\
-> **Geospatial service:** OpenStreetMap Nominatim
+## 📋 Table of Contents
 
-## 1. Backend Responsibilities
+- [Overview](#-overview)
+- [Key Features](#-key-features)
+- [System Architecture & Data Flow](#-system-architecture--data-flow)
+- [Tech Stack](#-tech-stack)
+- [Environment Variables & Secret Keys](#-environment-variables--secret-keys)
+- [Database Schema (Supabase)](#-database-schema-supabase)
+- [Microservices & Services breakdown](#-microservices--services-breakdown)
+  - [Node.js Express API Gateway](#1-nodejs-express-api-gateway)
+  - [Python FastAPI VRP Solver (`optimizer-service`)](#2-python-fastapi-vrp-solver-optimizer-service)
+  - [OSRM Engine Integration](#3-osrm-engine-integration)
+  - [Gemini Vision AI Engine](#4-gemini-vision-ai-engine)
+  - [Redis Geospatial Engine](#5-redis-geospatial-engine)
+- [API Documentation](#-api-documentation)
+- [Prerequisites & System Requirements](#-prerequisites--system-requirements)
+- [Step-by-Step Installation & Setup](#-step-by-step-installation--setup)
+- [Seeding Database & Running Simulations](#-seeding-database--running-simulations)
+- [Project Directory Structure](#-project-directory-structure)
 
-The CivicSync backend connects the citizen/admin React applications with
-external services and the application database.
+---
 
-Core responsibilities:
+## 🌟 Overview
 
--   Receive citizen waste complaints.
--   Validate uploaded waste images using Gemini AI Vision.
--   Extract GPS coordinates from image EXIF metadata.
--   Support manual location fallback.
--   Upload complaint and resolution images to Cloudinary.
--   Store complaint data in Supabase PostgreSQL.
--   Authenticate users and authorize administrative operations.
--   Retrieve real vehicle records for assignment.
--   Track assigned municipal vehicles.
--   Update complaint status and resolution information.
--   Support route/geospatial operations used by the frontend.
+The **Waste Management Backend** solves modern urban sanitation challenges by combining real-time IoT bin fill sensors, machine-learning-driven fleet route optimization, computer vision for complaint verification, and high-frequency live GPS tracking.
 
-The documented system workflow is:
+It automates garbage collection workflows by calculating **optimal multi-vehicle routes** under vehicle capacity limits and territorial geofences, reducing fuel consumption and operational costs.
 
-``` text
-Citizen Upload
-      ↓
-Express API
-      ↓
-Gemini AI Verification
-      ↓
-EXIF GPS Extraction
-      ↓
-Cloudinary Upload
-      ↓
-Supabase Complaint Record
-      ↓
-Admin Assignment
-      ↓
-Vehicle Tracking
-      ↓
-Resolution Proof
-      ↓
-Citizen Feedback
+---
+
+## ✨ Key Features
+
+1. **AI Vision Complaint Verification**: Integrates Google Gemini 2.5 Flash Vision API to automatically inspect uploaded photos and verify whether solid waste is present, filtering out invalid or unrelated submissions.
+2. **Automatic EXIF GPS Extraction**: Reads embedded EXIF metadata from photo uploads to pin precise complaint locations automatically.
+3. **Multi-Vehicle VRP Optimization**: Python OR-Tools microservice solving Capacitated Vehicle Routing Problem with soft territory boundary penalties using Guided Local Search & Path Cheapest Arc algorithms.
+4. **Real-Time Fleet Telemetry & Geospatial Caching**: High-performance Redis geospatial indexing (`GEOADD`/`GEORADIUS`) and Redis Hashes streaming live vehicle positions at sub-3-second intervals.
+5. **OSRM Road Network Routing**: Computes distance/duration matrix tables and precise GeoJSON polylines following real driving road networks.
+6. **Smart Priority Calculation Engine**: Dynamic multi-factor scoring (Fill level: 50%, Hours elapsed: 30%, Nearby citizen complaints: 20%) to highlight critical bins.
+7. **Collection Verification with Photo Proof**: Driver/Admin collection logging with timestamped proof-of-work photo upload directly to Cloudinary.
+8. **Geofenced Fleet Simulation Scripts**: Automated simulation scripts moving collection vehicles strictly along OSRM polylines within designated ward boundaries.
+
+---
+
+## 📐 System Architecture & Data Flow
+
+```mermaid
+flowchart TB
+    subgraph Clients["Clients & Stakeholders"]
+        CitizenApp["📱 Citizen Mobile / Web App"]
+        AdminDashboard["💻 Admin Control Center / Fleet Manager"]
+        DriverApp["🚛 Driver Mobile App"]
+    end
+
+    subgraph Gateway["Express.js API Gateway (Port 5000)"]
+        AuthMiddleware["🔐 JWT & Auth Middleware"]
+        RouteController["🗺️ Route Controller"]
+        ComplaintController["⚠️ Complaint Controller"]
+        BinController["🗑️ Bin Controller"]
+        CollectionController["📦 Collection Controller"]
+        VehicleController["🚛 Vehicle Controller"]
+    end
+
+    subgraph Microservices["Microservices & External Engines"]
+        FastAPIOptimizer["⚡ Python FastAPI OR-Tools Solver (Port 8000)\n/solve-vrp"]
+        OSRMEngine["🛣️ OSRM Engine (Port 5001)\nTable & Route Polylines"]
+        GeminiAI["🧠 Google Gemini 2.5 Flash AI Vision"]
+        CloudinaryService["☁️ Cloudinary Storage"]
+    end
+
+    subgraph DataLayer["Databases & Caches"]
+        SupabaseDB[("⚡ Supabase PostgreSQL\n(Bins, Vehicles, Complaints, Admins, Citizens)")]
+        RedisCache[("🔴 Redis In-Memory Geospatial Store\n(vehicle:locations GEO & Hashes)")]
+    end
+
+    CitizenApp -->|1. Submit Complaint + Photo| ComplaintController
+    ComplaintController -->|Extract EXIF GPS| Gateway
+    ComplaintController -->|2. Verify Image| GeminiAI
+    ComplaintController -->|3. Store Photo| CloudinaryService
+    ComplaintController -->|4. Save Record| SupabaseDB
+
+    AdminDashboard -->|Trigger Fleet Optimization| RouteController
+    RouteController -->|Fetch Active Bins & Drivers| SupabaseDB
+    RouteController -->|5. Get Matrix| OSRMEngine
+    RouteController -->|6. Solve VRP| FastAPIOptimizer
+    RouteController -->|7. Get Polylines| OSRMEngine
+    RouteController -->|8. Formatted Routes| AdminDashboard
+
+    DriverApp -->|Update Location Stream| VehicleController
+    VehicleController -->|Read/Write Live Coordinates| RedisCache
+    VehicleController -->|Sync Periodically| SupabaseDB
+
+    CollectionController -->|Log Collection + Photo| SupabaseDB
+    CollectionController -->|Upload Proof| CloudinaryService
 ```
 
-## 2. Technology Stack
+---
 
-  Component             Technology
-  --------------------- -----------------------------------------
-  Runtime               Node.js
-  Web Framework         Express.js
-  Database              Supabase PostgreSQL
-  Object Storage        Cloudinary
-  AI / Vision           Google Gemini AI Vision API
-  File Upload           Multer buffers
-  Authentication        JWT-based authentication
-  Geolocation           EXIF metadata + OpenStreetMap Nominatim
-  Frontend Consumers    React / Vite applications
-  Development Sharing   Pinggy / Localtunnel
+## 🛠 Tech Stack
 
-The project specification identifies Node.js and Express.js as the
-backend technologies, Supabase PostgreSQL and Cloudinary for storage,
-Gemini Vision for AI verification, and Nominatim for geocoding.
-fileciteturn1file0L41-L49
+| Layer | Technologies Used |
+| :--- | :--- |
+| **Core API Gateway** | Node.js (v18+), Express.js (v5.2), ES Modules (`"type": "module"`) |
+| **Optimization Microservice** | Python 3.10+, FastAPI (v0.115), Uvicorn, Google OR-Tools (v9.11) |
+| **Primary Database** | Supabase (PostgreSQL with Row Level Security) |
+| **Geospatial & Cache** | Redis (v6.2+ Node Client) - `GEOADD`, Redis Hashes |
+| **Routing Engine** | OSRM (Open Source Routing Machine) |
+| **AI Vision & EXIF** | Google GenAI SDK (`@google/genai`), `exif-parser` |
+| **Media Storage** | Cloudinary API, Multer (Memory Storage) |
+| **Authentication** | JSON Web Tokens (`jsonwebtoken`), `bcryptjs`, Google Auth Library |
+| **Logging & Middleware** | Morgan, CORS, Dotenv |
 
-## 3. Backend Architecture
+---
 
-``` text
-                    React Clients
-                         │
-                         │ REST API
-                         ↓
-                ┌──────────────────┐
-                │  Express Server  │
-                └────────┬─────────┘
-                         │
-        ┌────────────────┼────────────────┐
-        ↓                ↓                ↓
- Authentication    Complaint          Tracking /
- Middleware         Controller         Route APIs
-        │                │                │
-        │        ┌───────┴───────┐        │
-        │        ↓               ↓        │
-        │   Gemini Vision     EXIF GPS    │
-        │        │               │        │
-        │        └───────┬───────┘        │
-        │                ↓                │
-        │          Cloudinary             │
-        │                │                │
-        └────────────────┼────────────────┘
-                         ↓
-                  Supabase PostgreSQL
-                         │
-                         ↓
-                    Vehicles Data
+## 🔑 Environment Variables & Secret Keys
+
+Create a `.env` file in the root directory and specify the required API keys and connection URLs.
+
+### Root `.env` (Node.js Backend)
+
+```env
+# Server Configuration
+PORT=5000
+FRONTEND_URL=http://localhost:5173
+
+# Supabase Database
+SUPABASE_URL=https://your-supabase-project.supabase.co
+SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+
+# Authentication
+JWT_SECRET=your_super_secret_jwt_key_here
+
+# AI Vision & Media Services
+GEMINI_API_KEY=your_google_gemini_api_key
+CLOUDINARY_CLOUD_NAME=your_cloudinary_cloud_name
+CLOUDINARY_API_KEY=your_cloudinary_api_key
+CLOUDINARY_API_SECRET=your_cloudinary_api_secret
+
+# Microservices URLs
+REDIS_URL=redis://localhost:6379
+OSRM_URL=http://localhost:5001
+OPTIMIZER_URL=http://localhost:8000
 ```
 
-The documented server-side architecture contains a complaint controller,
-driver-tracking controller, and authentication/role middleware.
-fileciteturn1file0L62-L65
+---
 
-## 4. Main Backend Modules
+## 🗄 Database Schema (Supabase)
 
-### Complaint Controller
+### 1. `admins`
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | UUID (PK) | Unique Admin ID |
+| `full_name` | Text | Admin Name |
+| `email` | Text (Unique) | Government/Admin Email |
+| `password_hash` | Text | Bcrypt Password Hash |
+| `role` | Text | Role (e.g. `Super Admin`, `Fleet Manager`) |
+| `created_at` | Timestamp | Account creation timestamp |
 
-`server/controllers/complaintController.js`
+### 2. `citizens`
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | UUID (PK) | Unique Citizen ID |
+| `full_name` | Text | Citizen Full Name |
+| `email` | Text (Unique) | Citizen Email |
+| `password_hash` | Text | Bcrypt Password Hash (Nullable for Google Auth) |
+| `google_id` | Text | Google OAuth ID |
 
-Responsibilities:
+### 3. `bins`
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | UUID (PK) | Unique Smart Bin ID |
+| `latitude` | Float | GPS Latitude |
+| `longitude` | Float | GPS Longitude |
+| `fill_level` | Integer | Fill percentage (0 - 100%) |
+| `current_weight_kg` | Integer | Calculated weight in kg |
+| `status` | Text | Status (`Normal`, `Warning`, `Critical`) |
+| `priority_score` | Integer | Multi-factor urgency score (0 - 100) |
+| `ward` | Text | Ward / Location Zone |
+| `zone` | Text | Sub-zone identifier |
+| `last_collected` | Timestamp | Timestamp of last emptying |
+| `assigned_driver_id` | UUID | Foreign Key to `vehicles` |
 
--   Receive complaint submissions.
--   Process uploaded image buffers.
--   Call Gemini AI Vision.
--   Extract EXIF GPS information.
--   Upload images to Cloudinary.
--   Create/update complaint records in Supabase.
--   Manage complaint status and resolution information.
+### 4. `vehicles`
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | UUID (PK) | Vehicle / Truck ID |
+| `driver_name` | Text | Assigned Driver Name |
+| `driver_phone` | Text | Driver Contact Phone |
+| `driver_avatar` | Text | Driver Profile Image URL |
+| `license_plate` | Text | Vehicle Registration Plate |
+| `capacity_kg` | Integer | Maximum payload capacity in kg |
+| `current_load_kg` | Integer | Current loaded weight in kg |
+| `speed` | Float | Vehicle speed in km/h |
+| `status` | Text | Vehicle state (`Idle`, `Collecting`, `Maintenance`) |
+| `latitude` | Float | Current GPS Latitude |
+| `longitude` | Float | Current GPS Longitude |
+| `min_lat`, `max_lat` | Float | Territory Geofence Latitude Range |
+| `min_lng`, `max_lng` | Float | Territory Geofence Longitude Range |
+| `territory_name` | Text | Ward Territory Name |
 
-The supplied project specification identifies this controller as the
-core location for AI verification, EXIF extraction, Cloudinary
-streaming, and Supabase CRUD operations. fileciteturn1file0L123-L129
+### 5. `complaints`
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | UUID (PK) | Complaint ID |
+| `citizen_id` | UUID (FK) | Reporting Citizen ID |
+| `assigned_driver_id` | UUID (FK) | Assigned Driver ID |
+| `latitude`, `longitude` | Float | Issue GPS Location |
+| `description` | Text | Citizen / System description |
+| `image_url` | Text | Uploaded complaint photo URL |
+| `resolved_image_url` | Text | Driver/Admin resolution proof photo |
+| `status` | Text | Status (`Open`, `Assigned`, `Resolved`) |
+| `priority` | Text | Urgency level (`High`, `Medium`, `Low`) |
+| `category` | Text | AI Category (`Overflowing Bin`, `Roadside Litter`, etc.) |
+| `ai_confidence` | Float | AI model confidence score |
+| `ai_reason` | Text | AI classification explanation |
+| `gps_source` | Text | Location source (`EXIF_METADATA`, `USER_PIN`) |
+| `resolution_notes` | Text | Notes added upon resolution |
 
-### Driver Tracking Controller
+### 6. `collections`
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | UUID (PK) | Collection Log ID |
+| `bin_id` | UUID (FK) | Emptied Bin ID |
+| `vehicle_id` | UUID (FK) | Driver Vehicle ID |
+| `before_level` | Integer | Fill percentage before collection |
+| `after_level` | Integer | Fill percentage after collection (0%) |
+| `verification_photo_url` | Text | Proof photo URL |
+| `timestamp` | Timestamp | Collection timestamp |
 
-`server/controllers/driverTrackingController.js`
+---
 
-Responsibilities:
+## ⚙️ Microservices & Services Breakdown
 
--   Retrieve vehicle telemetry.
--   Retrieve assigned-task information.
--   Filter vehicle data for the relevant complaint.
--   Provide tracking information to the citizen-facing application.
+### 1. Node.js Express API Gateway
+Acts as the central router for all client applications, enforcing authentication middleware (`verifyAdmin`, `verifyCitizen`), handling multipart uploads, caching vehicle telemetry via Redis, and querying Supabase.
 
-### Authentication and Authorization Middleware
+### 2. Python FastAPI VRP Solver (`optimizer-service`)
+Located in `./optimizer-service`. Uses **Google OR-Tools** `pywrapcp.RoutingModel` to construct multi-vehicle routes:
+- **Territory Penalties**: Bins outside a vehicle's assigned bounding box receive a soft penalty of $+1,000,000$ meters to enforce driver ward ownership.
+- **Capacity Dimension**: Ensures no route exceeds `capacity - currentLoad`.
+- **Search Strategy**: `PATH_CHEAPEST_ARC` with `GUIDED_LOCAL_SEARCH` metaheuristics.
 
-The backend uses authentication middleware and `verifyAdmin` role
-verification for protected administrative operations.
+### 3. OSRM Engine Integration
+Communicates with Open Source Routing Machine to:
+- Generate distance and duration matrices (`/table/v1/driving`).
+- Return road-matched GeoJSON `LineString` geometries and turn-by-turn steps (`/route/v1/driving`).
 
-The system distinguishes citizen-facing tracking operations from
-admin-only operations.
+### 4. Gemini Vision AI Engine
+Processes images via `GoogleGenAI` model `gemini-2.5-flash`:
+- Verifies solid waste presence (returns strict JSON: `isGarbage`, `category`, `confidence`, `reason`).
+- Fallback: Gracefully handles API spikes (503) by flagging reports for manual review without crashing.
 
-## 5. Complaint Processing Pipeline
+### 5. Redis Geospatial Engine
+- Caches live positions in `vehicles:locations` using `GEOADD`.
+- Stores detailed truck telemetry in Redis Hashes `vehicle:<id>` for fast, low-latency API retrieval without hammering the relational database.
 
-A complaint follows this backend pipeline:
+---
 
-``` text
-POST complaint
-      ↓
-Receive multipart image
-      ↓
-Gemini AI verification
-      ↓
-Is valid garbage?
-   ┌──┴──┐
-   No    Yes
-   ↓      ↓
-Reject   Extract EXIF GPS
-422      ↓
-         GPS available?
-        ┌──┴──┐
-       Yes    No
-        ↓      ↓
-     Use GPS  Manual map pin
-        └──┬───┘
-           ↓
-    Upload image to Cloudinary
-           ↓
-   Insert complaint in Supabase
-           ↓
-      status = Open
+## 📡 API Documentation
+
+### 🔐 Auth Routes
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/auth/citizen/signup` | Public | Register a new citizen account |
+| `POST` | `/api/auth/citizen/login` | Public | Citizen login (returns JWT) |
+| `POST` | `/api/auth/citizen/google` | Public | Authenticate citizen via Google OAuth token |
+| `POST` | `/api/auth/admin/signup` | Public / Admin | Register a new municipal admin |
+| `POST` | `/api/auth/admin/login` | Public | Admin login (returns JWT) |
+
+### 🗑 Bin Management Routes
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/bins` | Public | Get all bins (Filterable by `status`, `ward`) |
+| `GET` | `/api/bins/:id` | Public | Get single bin details |
+| `POST` | `/api/bins` | Admin | Create a new bin |
+| `PUT` | `/api/bins/:id` | Admin | Update bin details / fill level |
+| `DELETE` | `/api/bins/:id` | Admin | Remove a bin |
+| `POST` | `/api/bins/simulate-telemetry` | Public / Cron | Simulate IoT fill level updates |
+| `POST` | `/api/bins/reset-simulation` | Admin | Reset bins to baseline mock data |
+
+### 🚛 Vehicle & Tracking Routes
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/vehicles` | Public | Fetch real-time vehicle positions from Redis |
+| `GET` | `/api/vehicles/:id` | Public | Fetch live telemetry for a single truck |
+| `GET` | `/api/tracking/assigned-drivers` | Public | Fetch active drivers assigned to open complaints |
+
+### 🗺 Route Optimization Routes
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/routes/optimize-fleet` | Admin | Triggers VRP optimization & returns road polylines |
+
+### ⚠️ Complaint Routes
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/complaints` | Citizen | Submit complaint with photo (AI + EXIF GPS) |
+| `GET` | `/api/complaints/my-complaints` | Citizen | View submitted complaints for logged-in citizen |
+| `GET` | `/api/complaints/admin/all` | Admin | View all citizen complaints |
+| `PATCH` | `/api/complaints/:id/assign` | Admin | Assign a driver to a complaint |
+| `PATCH` | `/api/complaints/:id/status` | Admin | Update status & upload resolution proof photo |
+
+### 📦 Collection Verification Routes
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/collections` | Admin | Log bin collection, upload proof, reset fill level to 0% |
+| `GET` | `/api/collections` | Admin | View history of collection logs |
+
+---
+
+## 📦 Prerequisites & System Requirements
+
+Ensure the following tools are installed on your environment:
+
+1. **Node.js**: `v18.0.0` or higher
+2. **Python**: `3.10` or higher
+3. **Redis Server**: Installed locally or accessible via URL (`redis://localhost:6379`)
+4. **Supabase Account**: PostgreSQL database instance with API credentials
+5. **OSRM Engine**: Running locally (Port `5001`) or remote OSRM server
+6. **Cloudinary Account**: Cloud name, API Key, and API Secret
+7. **Google Gemini API Key**: Enabled for Gemini 2.5 Flash
+
+---
+
+## 🚀 Step-by-Step Installation & Setup
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/victor-02-var/garabge_backend.git
+cd garabge_backend
 ```
 
-The documented implementation invokes Gemini, extracts EXIF GPS, uploads
-the image to Cloudinary, and inserts the complaint into the Supabase
-`complaints` table. fileciteturn1file0L133-L138
+### 2. Install Node.js Dependencies
 
-## 6. AI Image Verification
-
-The backend uses:
-
-``` text
-Google Gemini AI Vision
-        ↓
-verifyGarbageImage
-```
-
-The verification service evaluates an image buffer and returns
-information including:
-
--   `isGarbage`
--   Confidence score
--   Categorization/reason
--   Verification result
-
-A documented validation case expects a non-garbage image to return:
-
-``` text
-HTTP 422 Unprocessable Entity
-```
-
-with an AI-generated reason, while a valid waste image continues through
-the complaint workflow. fileciteturn1file0L107-L110
-fileciteturn1file0L158-L161
-
-## 7. EXIF GPS Extraction
-
-The backend attempts to extract embedded GPS information directly from
-the uploaded image.
-
-Conceptually:
-
-``` text
-Image Buffer
-    ↓
-EXIF Parser
-    ↓
-GPS Latitude
-GPS Longitude
-    ↓
-Complaint.latitude
-Complaint.longitude
-```
-
-If GPS metadata is unavailable, the application can use a manually
-selected map location.
-
-The source specification records the location source using:
-
-``` text
-EXIF_METADATA
-USER_PIN
-```
-
-The extraction logic is associated with `imageService.js`.
-fileciteturn1file0L20-L24 fileciteturn1file0L107-L110
-
-## 8. Image Upload Architecture
-
-Complaint images and resolution-proof images are stored in
-**Cloudinary**.
-
-The backend receives multipart uploads through Multer buffers and
-streams them to Cloudinary rather than relying on local disk storage.
-
-``` text
-HTTP Multipart Upload
-        ↓
-Multer Buffer
-        ↓
-Cloudinary Upload Stream
-        ↓
-Cloudinary URL
-        ↓
-Supabase Record
-```
-
-This design avoids temporary local file storage and is suitable for
-cloud/serverless deployment environments.
-fileciteturn1file0L114-L116 fileciteturn1file0L142-L146
-
-## 9. Database
-
-### `complaints`
-
-Important fields:
-
-  Field                  Type / Purpose
-  ---------------------- --------------------------------------
-  `id`                   UUID / Primary Key
-  `citizen_id`           UUID / Citizen reference
-  `latitude`             Numeric
-  `longitude`            Numeric
-  `description`          Text
-  `image_url`            Cloudinary URL
-  `resolved_image_url`   Resolution proof URL
-  `resolution_notes`     Text
-  `status`               Open / Assigned / Resolved / Cleaned
-  `priority`             Critical / High / Medium / Low
-  `category`             Complaint category
-  `ai_confidence`        AI confidence value
-  `ai_reason`            AI verification explanation
-  `gps_source`           EXIF_METADATA / USER_PIN
-  `assigned_driver_id`   Foreign key to vehicle
-  `created_at`           Timestamp
-  `resolved_at`          Timestamp
-
-### `vehicles`
-
-Important fields:
-
-  Field                            Type / Purpose
-  -------------------------------- -----------------------------------
-  `id / vehicle_id`                UUID / Primary Key
-  `driver_name`                    Driver identity
-  `license_plate`                  Vehicle registration
-  `status`                         Active / In Service / Maintenance
-  `speed`                          Current speed
-  `capacity_kg`                    Vehicle capacity
-  `current_load_kg / payload_kg`   Current load
-  `latitude`                       Current latitude
-  `longitude`                      Current longitude
-
-These structures and status values are defined in the supplied technical
-specification. fileciteturn1file0L71-L103
-
-## 10. Complaint Assignment
-
-The admin workflow uses actual vehicle records from the database rather
-than static/mock driver objects.
-
-``` text
-Open Complaint
-      ↓
-Admin Dashboard
-      ↓
-Query vehicles table
-      ↓
-Select active vehicle
-      ↓
-Get vehicles.id UUID
-      ↓
-Update complaint.assigned_driver_id
-      ↓
-status = Assigned
-```
-
-The documented implementation replaced static driver arrays with live
-`vehicles` table queries to prevent assignment/tracking UUID mismatches.
-fileciteturn1file0L135-L146
-
-## 11. Vehicle Tracking API Flow
-
-The citizen tracking page requests assigned-driver information using:
-
-``` text
-/api/tracking/assigned-drivers?complaintId=...
-```
-
-The backend retrieves the relevant vehicle information and returns
-telemetry used by the Leaflet tracking interface.
-
-The documented telemetry includes vehicle coordinates and operational
-information such as speed/status. fileciteturn1file0L135-L138
-
-### Current Tracking Model
-
-The documented implementation uses database polling rather than
-persistent WebSockets.
-
-The specification identifies approximately **3--5 second polling
-intervals** as the current approach.
-
-Future production improvement:
-
-``` text
-Polling
-  ↓
-WebSocket / Event-driven telemetry
-```
-
-fileciteturn1file0L165-L169
-
-## 12. Resolution Workflow
-
-After the municipal unit clears the reported site:
-
-``` text
-Assigned Complaint
-       ↓
-Cleanup Completed
-       ↓
-Admin / Driver Uploads Proof
-       ↓
-Cloudinary
-       ↓
-resolved_image_url
-       ↓
-status = Resolved
-       ↓
-Citizen Feedback
-```
-
-The documented workflow stores the resolution image URL and changes the
-complaint status to `Resolved`. fileciteturn1file0L133-L138
-
-## 13. Important API / Backend Interfaces
-
-The backend exposes functionality consumed by the React applications
-for:
-
--   Authentication
--   Complaint submission
--   Complaint retrieval
--   Complaint status updates
--   Vehicle administration queries
--   Assigned-driver tracking
--   Resolution proof upload
--   Route/geospatial operations
-
-Keep endpoint paths synchronized with the actual Express router
-implementation.
-
-The documented tracking endpoint is:
-
-``` text
-GET /api/tracking/assigned-drivers?complaintId=<id>
-```
-
-## 14. Environment Variables
-
-Create a `.env` file for local development.
-
-``` env
-PORT=3000
-
-SUPABASE_URL=...
-SUPABASE_SERVICE_ROLE_KEY=...
-
-CLOUDINARY_CLOUD_NAME=...
-CLOUDINARY_API_KEY=...
-CLOUDINARY_API_SECRET=...
-
-GEMINI_API_KEY=...
-```
-
-Never commit `.env` or service credentials to Git.
-
-The required environment variables are documented in the project
-specification. fileciteturn1file0L173-L183
-
-## 15. Getting Started
-
-### Prerequisites
-
-Install:
-
--   Node.js
--   npm
--   Supabase project
--   Cloudinary account
--   Google Gemini API key
-
-### Installation
-
-``` bash
+```bash
 npm install
 ```
 
-### Development
+### 3. Set Up & Start Python Optimizer Service
 
-``` bash
-npm run dev
+```bash
+# Navigate to the optimizer service directory
+cd optimizer-service
+
+# Create a virtual environment (Optional but recommended)
+python -m venv venv
+# On Windows:
+venv\Scripts\activate
+# On Linux/macOS:
+source venv/bin/activate
+
+# Install Python requirements
+pip install -r requirements.txt
+
+# Start FastAPI server on Port 8000
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-The supplied project specification documents `npm install` and
-`npm run dev` as the development setup commands.
-fileciteturn1file0L173-L188
+### 4. Configure Environment Variables
 
-## 16. Testing
+Create a `.env` file in the root directory (refer to the [Environment Variables](#-environment-variables--secret-keys) section).
 
-### AI Image Verification
+### 5. Start Redis Server
 
-Test:
+Make sure your Redis server is running locally on port `6379`:
 
-``` text
-Non-garbage image
-        ↓
-Gemini verification
-        ↓
-HTTP 422 + AI reason
+```bash
+redis-server
 ```
 
-Valid waste image:
+### 6. Start the Main Express Gateway Server
 
-``` text
-Waste image
-    ↓
-AI verification
-    ↓
-Complaint continues
+```bash
+# From the root directory:
+npm start
 ```
 
-### Vehicle Tracking
+*Server will launch on `http://localhost:5000`.*
 
-Test:
+---
 
-``` text
-Assign vehicle
-      ↓
-Complaint gets vehicle UUID
-      ↓
-Citizen opens tracking
-      ↓
-Vehicle marker appears
-      ↓
-Telemetry card displays active unit
+## 🌱 Seeding Database & Running Simulations
+
+The repository includes helper scripts to seed initial data into Supabase/Redis and simulate real-time fleet movement.
+
+### 1. Seed Admin Credentials
+
+Creates default municipal admin users in Supabase (`admins` table):
+
+```bash
+node seed.js
 ```
 
-These two tests are explicitly documented as working validation
-scenarios. fileciteturn1file0L158-L161
+### 2. Seed Fleet Vehicles & Sync to Redis
 
-## 17. Known Issues and Fixes
+Populates 8 collection trucks with driver info and syncs coordinates to Redis:
 
-### Missing Location Column
-
-**Problem**
-
-``` text
-complaints.location does not exist
+```bash
+node seedVehicles.js
 ```
 
-**Solution**
+### 3. Seed Geofenced Ward Dustbins
 
-Controllers were updated to use explicit:
+Generates territory dustbins and unassigned outlier bins:
 
-``` text
-latitude
-longitude
+```bash
+node seedBins.js
 ```
 
-columns.
+### 4. Run Strict Geofenced Fleet Simulation
 
-### 403 Tracking Error
+Simulates truck movement strictly along OSRM polylines within ward boundaries and updates Redis telemetry every 2.5 seconds:
 
-**Problem**
-
-Admin middleware blocked citizen tracking requests.
-
-**Solution**
-
-Tracking authorization was separated from admin-only authorization or
-appropriate token fallback was allowed.
-
-### Leaflet Fullscreen Issue
-
-**Problem**
-
-The Leaflet map could freeze or render incorrectly after fullscreen
-changes.
-
-**Solution**
-
-A map recenter/resize helper uses:
-
-``` javascript
-map.invalidateSize()
+```bash
+node scripts/simulateFleetMovement.js
 ```
 
-when fullscreen state changes.
+---
 
-These fixes are recorded in the project's technical specification.
-fileciteturn1file0L150-L154
+## 📂 Project Directory Structure
 
-## 18. Security Considerations
+```
+garabge_backend/
+├── optimizer-service/             # Python FastAPI OR-Tools Microservice
+│   ├── main.py                    # FastAPI route handler (/solve-vrp)
+│   ├── optimizer.py               # OR-Tools VRP solver implementation
+│   └── requirements.txt           # Python package dependencies
+├── scripts/                       # Background Jobs & Fleet Simulators
+│   └── simulateFleetMovement.js   # Geofenced truck movement loop
+├── src/                           # Express.js Application Source
+│   ├── app.js                     # Gateway Entry Point & Middleware setup
+│   ├── config/                    # External Service Connections
+│   │   ├── cloudinary.js          # Cloudinary & Multer configuration
+│   │   ├── redis.js               # Redis client connection setup
+│   │   └── supabase.js            # Supabase JS client initialization
+│   ├── controllers/               # Express Request Handlers
+│   │   ├── authAdminController.js
+│   │   ├── authCitizenController.js
+│   │   ├── binController.js
+│   │   ├── collectionController.js
+│   │   ├── complaintController.js
+│   │   ├── driverTrackingController.js
+│   │   ├── routeController.js
+│   │   └── vehicleController.js
+│   ├── middleware/                # Custom Middlewares
+│   │   ├── authMiddleware.js      # JWT Citizen & Admin Verification
+│   │   └── errorHandler.js        # Global Error Handling Middleware
+│   ├── routes/                    # API Endpoints Router Definitions
+│   │   ├── authAdminRoutes.js
+│   │   ├── authCitizenRoutes.js
+│   │   ├── binRoutes.js
+│   │   ├── collectionRoutes.js
+│   │   ├── complaintRoutes.js
+│   │   ├── routeRoutes.js
+│   │   ├── trackingRoutes.js
+│   │   └── vehicleRoutes.js
+│   ├── services/                  # Business Logic & Integrations
+│   │   ├── imageService.js        # Gemini Vision AI & EXIF GPS Extractor
+│   │   ├── optimizerService.js    # Client for Python FastAPI Solver
+│   │   └── osrmService.js         # Client for OSRM Distance Matrix & Routes
+│   └── utils/                     # Utility Helper Functions
+│       ├── mockBinGenerator.js
+│       ├── mockVehicleGenerator.js
+│       └── priorityEngine.js      # Dynamic Bin Priority Scoring Engine
+├── seed.js                        # Admin Seeding Script
+├── seedBins.js                    # Ward Dustbin Seeding Script
+├── seedVehicles.js                # Fleet Vehicles Seeding Script
+├── simulateVehicles.js            # GPS Telemetry Simulation Script
+├── package.json                   # Project Dependencies & Scripts
+└── README.md                      # Comprehensive Documentation
+```
 
-The backend should protect:
+---
 
--   Supabase service-role credentials
--   Cloudinary API credentials
--   Gemini API key
--   JWT/authentication secrets
--   Administrative routes
+## 🤝 Contributing
 
-Administrative operations should remain protected by role verification
-such as `verifyAdmin`.
+Contributions, issues, and feature requests are welcome! Feel free to check the repository issues or open a pull request.
 
-For production deployment, additional hardening should include rate
-limiting, audit logging, stronger token lifecycle management, and
-granular municipal roles.
+---
 
-## 19. Future Backend Improvements
+## 📄 License
 
-The documented future scope includes:
-
--   IoT smart-bin integration using ultrasonic fill sensors.
--   Automated push notification gateways.
--   WebSocket/event-driven vehicle telemetry.
--   More advanced fleet and route optimization.
--   Production-scale operational analytics.
-
-The current documentation specifically identifies IoT smart dustbins and
-automated push notifications as future scope.
-fileciteturn1file0L165-L169
-
-## 20. Backend Development Guidelines
-
-When extending the backend:
-
-1.  Keep controllers focused on their respective domain.
-2.  Keep authentication and authorization in middleware.
-3.  Keep database credentials and API keys in environment variables.
-4.  Validate uploaded files before external processing.
-5.  Store image binaries in Cloudinary and URLs/metadata in Supabase.
-6.  Use actual database UUIDs when linking complaints and vehicles.
-7.  Keep API contracts synchronized with the frontend.
-8.  Add a test case whenever a new critical workflow is introduced.
-9.  Update this README when backend modules, environment variables,
-    database fields, or API contracts change.
-
-## Project Status
-
-**Development Status:** Active Development
-
-CivicSync Backend provides the REST API and integration layer for the
-citizen and municipal applications, connecting complaint processing, AI
-verification, geolocation, cloud image storage, PostgreSQL data, and
-municipal vehicle tracking.
+This project is licensed under the **ISC License**.
